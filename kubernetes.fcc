@@ -3,23 +3,29 @@ version: 1.2.0
 passwd:
   users:
     - name: core
+      groups:
+        - docker
+        - wheel
+        - sudo
       ssh_authorized_keys:
         - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC2VzwuSPfmAMJuPIPLX3OSbgQQ61dAdvoFtYga+1jcxBvV++JBP3WGafieyquDH9bun7tMr2lk0Ick9WpsZQES1SOJjx7kRPqJt4sdr8XrTZmqiy0JFK7yLZbz/jxWCJgLkX5eozXNrPyb+PunZ+OSoz+rFSP6lnOtWHkVpvYivcxUSF3ahrWSFguX/NAj83+MrF0jH4ld/qyONCPNTcsywkbjVou2Xdgqc82XwPACqwPOCfqC9Li7lnXZMW420oI7ZfG80pVpNO9yKLmXqb/M+8as+W+Lv5UUQKvN/JTU5qcnnAa8v87Yk0wZQbuDHTDOM7sQjbciTYdRpqPjOjJSZcJCVU1TVu7g0cAeDjtKnJv7WM4OQug8bG77cP8HdqCzVrC+mxBxudqhaqcf+oMtd8m0uwPvQiLfQYpTyH7D7LrgHk4+zAOLKUr0GZckXszlHYMJQjYtwigd4DOKFQ9XfZJPmMwlaYPfsj0Y0DVPx60xjmDy36dYELh+e1uJybB4OMZsmGzcuyErjAmdR9mDLN/9EBoZPNaxjLWsUt0gjog/S4z0iMnBa48b7ZtWPH/5VOVeUf55W/7P0umQ/vEMMJqRyvSJIkC4WBDKUJFBalLTjvJaY5QHVOE9RNpU0TfTBnhH3Qj5HpOYgWi9087gT0c/MpX03QVJpH2vFXy1/Q== along@trtn.com
 storage:
   files:
+    - path: /etc/sysctl.d/20-silence-audit.conf
+      contents:
+        inline: |
+          kernel.printk=4
     - path: /usr/local/bin/k8s-install.sh
       mode: 0755
       overwrite: true
       contents:
         inline: |
-	  sudo rpm-ostree install conntrack 
-          sudo rpm-ostree install open-vm-tools
-
+          sudo rpm-ostree install conntrack open-vm-tools
           sudo systemctl start docker
           sudo systemctl enable docker
 
           sudo touch /etc/docker/daemon.json
-          cat <<EOF | tee /etc/docker/daemon.json
+          cat <<EOF | sudo tee /etc/docker/daemon.json
           {
             "exec-opts": ["native.cgroupdriver=systemd"],
             "log-driver": "json-file",
@@ -73,33 +79,105 @@ storage:
           EOF
 
           sudo sysctl --system
+
+          sudo hostnamectl set-hostname k8s-controlplane-1
+          sudo systemctl restart NetworkManager
     - path: /usr/local/bin/k8s-init.sh
       mode: 0755
       overwrite: true
       contents:
         inline: |
-          cat << EOF > kubeadm-init.yaml
+          cat << EOF > /tmp/kubeadm-init.yaml
           apiVersion: kubeadm.k8s.io/v1beta2
           kind: InitConfiguration
           nodeRegistration:
             kubeletExtraArgs:
               volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"
-          localAPIEndpoint:
-            advertiseAddress: "192.168.200.60"
           ---
           apiVersion: kubeadm.k8s.io/v1beta2
           kind: ClusterConfiguration
-          controlPlaneEndpoint: ""
+          controlPlaneEndpoint: "192.168.200.60"
           networking:
             podSubnet: "100.96.0.0/11"
             serviceSubnet: "10.64.0.0/13"
           controllerManager:
             extraArgs:
               flex-volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"
-          apiServer:
-            extraArgs:
-              advertise-address: 192.168.200.60
 
           EOF
 
-          sudo kubeadm init --config kubeadm-init.yaml
+          sudo mkdir -p /etc/kubernetes/manifests
+
+          # Setup First Node for kube-vip
+          sudo docker run --network host --rm plndr/kube-vip:0.2.1 manifest pod \
+          --interface ens192 \
+          --vip 192.168.200.60 \
+          --arp \
+          --leaderElection | sudo tee /etc/kubernetes/manifests/vip.yaml
+
+          sudo kubeadm init --config /tmp/kubeadm-init.yaml --upload-certs | tee $HOME/kubeadm-init.log
+
+          # Copy the k8s configuration 
+          mkdir -p $HOME/.kube
+          sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+          sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+          # Install calico 
+          curl https://docs.projectcalico.org/manifests/calico.yaml -O
+          sed -i 's/usr\/libexec/opt\/libexec/g' calico.yaml
+          kubectl apply -f calico.yaml
+    - path: /home/core/kubeadm-worker-join.yaml
+      user:
+        name: core
+      contents:
+        inline: |
+          apiVersion: kubeadm.k8s.io/v1beta2
+          kind: JoinConfiguration
+          discovery:
+            bootstrapToken:
+              apiServerEndpoint: "192.168.200.60:6443"
+              token: "<some-token>"
+              caCertHashes:
+              - "<discovery-token-ca-cert-hash>"
+          nodeRegistration:
+            kubeletExtraArgs:
+              volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"          
+    - path: /home/core/kubeadm-controlplane-join.yaml
+      user:
+        name: core
+      contents:
+        inline: |
+          apiVersion: kubeadm.k8s.io/v1beta2
+          kind: JoinConfiguration
+          discovery:
+            bootstrapToken:
+              apiServerEndpoint: "192.168.200.60:6443"
+              token: "<some-token>"
+              caCertHashes:
+              - "<discovery-token-ca-cert-hash>"
+          controlPlane:
+            certificateKey: "<certkey>"
+          nodeRegistration:
+            kubeletExtraArgs:
+              volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"          
+    - path: /usr/local/bin/k8s-controlplane-join.sh
+      mode: 0755
+      overwrite: true
+      contents:
+        inline: |
+          sudo kubeadm join 192.168.200.60:6443 --config $HOME/kubeadm-controlplane-join.yaml 
+
+          # Additional control-plane node(s)
+          sudo mkdir -p /etc/kubernetes/manifests
+          sudo docker run --network host --rm plndr/kube-vip:0.2.1 manifest pod \
+          --interface ens192 \
+          --vip 192.168.200.60 \
+          --arp \
+          --leaderElection | sudo tee /etc/kubernetes/manifests/vip.yaml
+    - path: /usr/local/bin/k8s-worker-join.sh
+      mode: 0755
+      overwrite: true
+      contents:
+        inline: |
+          sudo kubeadm join 192.168.200.60:6443 --config $HOME/kubeadm-worker-join.yaml 
+          

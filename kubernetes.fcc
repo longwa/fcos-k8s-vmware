@@ -8,7 +8,7 @@ passwd:
         - wheel
         - sudo
       ssh_authorized_keys:
-        - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQC2VzwuSPfmAMJuPIPLX3OSbgQQ61dAdvoFtYga+1jcxBvV++JBP3WGafieyquDH9bun7tMr2lk0Ick9WpsZQES1SOJjx7kRPqJt4sdr8XrTZmqiy0JFK7yLZbz/jxWCJgLkX5eozXNrPyb+PunZ+OSoz+rFSP6lnOtWHkVpvYivcxUSF3ahrWSFguX/NAj83+MrF0jH4ld/qyONCPNTcsywkbjVou2Xdgqc82XwPACqwPOCfqC9Li7lnXZMW420oI7ZfG80pVpNO9yKLmXqb/M+8as+W+Lv5UUQKvN/JTU5qcnnAa8v87Yk0wZQbuDHTDOM7sQjbciTYdRpqPjOjJSZcJCVU1TVu7g0cAeDjtKnJv7WM4OQug8bG77cP8HdqCzVrC+mxBxudqhaqcf+oMtd8m0uwPvQiLfQYpTyH7D7LrgHk4+zAOLKUr0GZckXszlHYMJQjYtwigd4DOKFQ9XfZJPmMwlaYPfsj0Y0DVPx60xjmDy36dYELh+e1uJybB4OMZsmGzcuyErjAmdR9mDLN/9EBoZPNaxjLWsUt0gjog/S4z0iMnBa48b7ZtWPH/5VOVeUf55W/7P0umQ/vEMMJqRyvSJIkC4WBDKUJFBalLTjvJaY5QHVOE9RNpU0TfTBnhH3Qj5HpOYgWi9087gT0c/MpX03QVJpH2vFXy1/Q== along@trtn.com
+        - ssh-rsa <ADD YOUR PUBLIC KEY HERE>
 storage:
   files:
     - path: /etc/sysctl.d/20-silence-audit.conf
@@ -89,10 +89,10 @@ storage:
           echo "**************************************************************"
           echo ""
           echo "After reboot, run ONE of the following:"
-          echo "--------------------------------------------------------------"
-          echo "k8s-init.sh:               Setup the first control plane node
-          echo "k8s-controlplane-join.sh:  Add additional control-plane nodes for HA"
-          echo "k8s-worker-join.sh:        Add additional worker nodes"
+          echo ""
+          echo "k8s-init.sh                Setup the first control plane node"
+          echo "k8s-controlplane-join.sh   Add additional control-plane nodes for HA"
+          echo "k8s-worker-join.sh         Add additional worker nodes"
           echo ""
           echo "NOTE: Ensure that all control plane nodes have a DHCP reservation"
           echo ""
@@ -131,7 +131,7 @@ storage:
           --arp \
           --leaderElection | sudo tee /etc/kubernetes/manifests/vip.yaml
 
-          sudo kubeadm init --config $HOME/kubeadm-init.yaml --upload-certs | tee $HOME/kubeadm-init.log
+          sudo kubeadm init --config $HOME/kubeadm-init.yaml | tee $HOME/kubeadm-init.log
 
           # Copy the k8s configuration 
           mkdir -p $HOME/.kube
@@ -181,7 +181,7 @@ storage:
           sudo mkdir -p /etc/kubernetes/manifests
           sudo docker run --network host --rm plndr/kube-vip:0.2.1 manifest pod \
           --interface ens192 \
-          --vip $VIP\
+          --vip $VIP \
           --arp \
           --leaderElection | sudo tee /etc/kubernetes/manifests/vip.yaml
     - path: /usr/local/bin/k8s-worker-join.sh

@@ -55,8 +55,10 @@ On the initial control-plane node, you can monitor the pods with `watch kubectl 
 
 Repeat this process again to add additional control plane nodes. Note that you should always have an odd number (such as 3) to ensure proper failover.
 
-** Notes
-*You only have 2 hours to use the initial certificate key before it expires*. Once it expires, you'll need to run:
+## Notes
+You only have 2 hours to use the initial certificate key before it expires. 
+
+Once it expires, you'll need to run:
 ```
 sudo kubeadm init phase upload-certs --upload-certs
 ```

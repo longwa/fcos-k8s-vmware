@@ -9,8 +9,9 @@ Install and setup of HA Kubernetes on VMWare using Fedora CoreOS
 
 * To generate the Ignition Configuration file, you need either `docker` or `podman` installed (if using podman, edit config.sh to change docker to podman).
   
-  
-  Run config.sh and pipe to pbcopy (on macOS) to copy the resulting base64 encoded string to the clipboard.
+* Edit the file `kubernetes.fcc` and add a public SSH key that will be used for login to the nodes.
+
+* Run config.sh and pipe to pbcopy (on macOS) to copy the resulting base64 encoded string to the clipboard.
   ```
   config.sh | pbcopy
   ```
@@ -53,3 +54,10 @@ Run `k8s-controlplane-join.sh` and follow the instructions entering the token an
 On the initial control-plane node, you can monitor the pods with `watch kubectl get pods -A` until all are ready.
 
 Repeat this process again to add additional control plane nodes. Note that you should always have an odd number (such as 3) to ensure proper failover.
+
+** Notes
+*You only have 2 hours to use the initial certificate key before it expires*. Once it expires, you'll need to run:
+```
+sudo kubeadm init phase upload-certs --upload-certs
+```
+On the primary controlplane and copy the new certificate key for joining additional CP nodes.

@@ -20,6 +20,8 @@ storage:
       overwrite: true
       contents:
         inline: |
+          set -e
+          read -p "Hostname: " HOSTNAME
           sudo rpm-ostree install conntrack open-vm-tools
           sudo systemctl start docker
           sudo systemctl enable docker
@@ -40,8 +42,8 @@ storage:
           EOF
 
           sudo mkdir -p /etc/systemd/system/docker.service.d
-
           sudo touch /etc/systemd/system/docker.service.d/docker.conf
+
           cat <<EOF | sudo tee /etc/systemd/system/docker.service.d/docker.conf
           [Service]
           ExecStart=
@@ -80,14 +82,29 @@ storage:
 
           sudo sysctl --system
 
-          sudo hostnamectl set-hostname k8s-controlplane-1
+          sudo hostnamectl set-hostname $HOSTNAME
           sudo systemctl restart NetworkManager
+          echo "**************************************************************"
+          echo "Install complete. Run 'sudo systemctl reboot' to apply changes"
+          echo "**************************************************************"
+          echo ""
+          echo "After reboot, run ONE of the following:"
+          echo "--------------------------------------------------------------"
+          echo "k8s-init.sh:               Setup the first control plane node
+          echo "k8s-controlplane-join.sh:  Add additional control-plane nodes for HA"
+          echo "k8s-worker-join.sh:        Add additional worker nodes"
+          echo ""
+          echo "NOTE: Ensure that all control plane nodes have a DHCP reservation"
+          echo ""
     - path: /usr/local/bin/k8s-init.sh
       mode: 0755
       overwrite: true
       contents:
         inline: |
-          cat << EOF > /tmp/kubeadm-init.yaml
+          set -e
+          read -p "Virtual IP: ", VIP
+
+          cat << EOF > $HOME/kubeadm-init.yaml
           apiVersion: kubeadm.k8s.io/v1beta2
           kind: InitConfiguration
           nodeRegistration:
@@ -96,14 +113,13 @@ storage:
           ---
           apiVersion: kubeadm.k8s.io/v1beta2
           kind: ClusterConfiguration
-          controlPlaneEndpoint: "192.168.200.60"
+          controlPlaneEndpoint: "$VIP"
           networking:
             podSubnet: "100.96.0.0/11"
             serviceSubnet: "10.64.0.0/13"
           controllerManager:
             extraArgs:
               flex-volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"
-
           EOF
 
           sudo mkdir -p /etc/kubernetes/manifests
@@ -111,11 +127,11 @@ storage:
           # Setup First Node for kube-vip
           sudo docker run --network host --rm plndr/kube-vip:0.2.1 manifest pod \
           --interface ens192 \
-          --vip 192.168.200.60 \
+          --vip $VIP \
           --arp \
           --leaderElection | sudo tee /etc/kubernetes/manifests/vip.yaml
 
-          sudo kubeadm init --config /tmp/kubeadm-init.yaml --upload-certs | tee $HOME/kubeadm-init.log
+          sudo kubeadm init --config $HOME/kubeadm-init.yaml --upload-certs | tee $HOME/kubeadm-init.log
 
           # Copy the k8s configuration 
           mkdir -p $HOME/.kube
@@ -126,58 +142,72 @@ storage:
           curl https://docs.projectcalico.org/manifests/calico.yaml -O
           sed -i 's/usr\/libexec/opt\/libexec/g' calico.yaml
           kubectl apply -f calico.yaml
-    - path: /home/core/kubeadm-worker-join.yaml
-      user:
-        name: core
-      contents:
-        inline: |
-          apiVersion: kubeadm.k8s.io/v1beta2
-          kind: JoinConfiguration
-          discovery:
-            bootstrapToken:
-              apiServerEndpoint: "192.168.200.60:6443"
-              token: "<some-token>"
-              caCertHashes:
-              - "<discovery-token-ca-cert-hash>"
-          nodeRegistration:
-            kubeletExtraArgs:
-              volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"          
-    - path: /home/core/kubeadm-controlplane-join.yaml
-      user:
-        name: core
-      contents:
-        inline: |
-          apiVersion: kubeadm.k8s.io/v1beta2
-          kind: JoinConfiguration
-          discovery:
-            bootstrapToken:
-              apiServerEndpoint: "192.168.200.60:6443"
-              token: "<some-token>"
-              caCertHashes:
-              - "<discovery-token-ca-cert-hash>"
-          controlPlane:
-            certificateKey: "<certkey>"
-          nodeRegistration:
-            kubeletExtraArgs:
-              volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"          
+
+          # Wait for stuff to start
+          echo "Waiting for primary control plane to be ready...."
+          sleep 3s
+          watch kubectl get pods -A
+
     - path: /usr/local/bin/k8s-controlplane-join.sh
       mode: 0755
-      overwrite: true
       contents:
         inline: |
-          sudo kubeadm join 192.168.200.60:6443 --config $HOME/kubeadm-controlplane-join.yaml 
+          set -e
+          echo "Please cat $HOME/kubadm-init.log on the primary controlplane to get the following values: "
+          read -p "Virtual IP: " VIP
+          read -p "Token: " TOKEN
+          read -p "Discovery Token CA Cert Hash: " CERTHASH
+          read -p "Certificate Key: " CERTKEY
+
+          cat << EOF > $HOME/kubeadm-join-controlplane.yaml
+          apiVersion: kubeadm.k8s.io/v1beta2
+          kind: JoinConfiguration
+          discovery:
+            bootstrapToken:
+              apiServerEndpoint: "$VIP:6443"
+              token: "$TOKEN"
+              caCertHashes:
+              - "$CERTHASH"
+          controlPlane:
+            certificateKey: "$CERTKEY"
+          nodeRegistration:
+            kubeletExtraArgs:
+              volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"          
+          EOF
+
+          sudo kubeadm join $VIP:6443 --config $HOME/kubeadm-join-controlplane.yaml 
 
           # Additional control-plane node(s)
           sudo mkdir -p /etc/kubernetes/manifests
           sudo docker run --network host --rm plndr/kube-vip:0.2.1 manifest pod \
           --interface ens192 \
-          --vip 192.168.200.60 \
+          --vip $VIP\
           --arp \
           --leaderElection | sudo tee /etc/kubernetes/manifests/vip.yaml
     - path: /usr/local/bin/k8s-worker-join.sh
       mode: 0755
-      overwrite: true
       contents:
         inline: |
-          sudo kubeadm join 192.168.200.60:6443 --config $HOME/kubeadm-worker-join.yaml 
+          set -e
+          echo "Please cat $HOME/kubadm-init.log on the primary controlplane to get the following values: "
+          read -p "Virtual IP: " VIP
+          read -p "Token: " TOKEN
+          read -p "Discovery Token CA Cert Hash: " CERTHASH
+
+          cat << EOF > $HOME/kubeadm-join-worker.yaml
+          apiVersion: kubeadm.k8s.io/v1beta2
+          kind: JoinConfiguration
+          discovery:
+            bootstrapToken:
+              apiServerEndpoint: "$VIP:6443"
+              token: "$TOKEN"
+              caCertHashes:
+              - "$CERTHASH"
+          nodeRegistration:
+            kubeletExtraArgs:
+              volume-plugin-dir: "/opt/libexec/kubernetes/kubelet-plugins/volume/exec/"          
+          EOF
+
+          sudo kubeadm join $VIP:6443 --config $HOME/kubeadm-join-worker.yaml 
+          echo "Join complete."
           
